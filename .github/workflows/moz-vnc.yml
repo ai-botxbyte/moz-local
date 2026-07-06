@@ -1,0 +1,228 @@
+name: Moz Pro Checker VNC
+
+on:
+  workflow_dispatch:
+    inputs:
+      workers:
+        description: 'Number of browser tabs (cf-autoclick needs 1)'
+        required: false
+        default: '1'
+
+env:
+  DISPLAY: ":1"
+  VNC_PORT: 5901
+  NOVNC_PORT: 6080
+  VNC_PASSWORD: "botxbyte123"
+  MOZ_DIR: "/home/runner/moz-local"
+  # Management-service gateway (public /moz-pro/ pull+result route).
+  MOZ_API_URL: "https://b-domain.articleinnovator.com/domain-metrics-management-service/api/v1"
+  # moz.com login — injected as repo/org secrets (the /moz-pro-accounts/pool/
+  # endpoint is intentionally NOT public, so the external runner uses env creds).
+  MOZ_LOGIN_EMAIL: ${{ secrets.MOZ_LOGIN_EMAIL }}
+  MOZ_LOGIN_PASSWORD: ${{ secrets.MOZ_LOGIN_PASSWORD }}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Clone moz-local code
+        run: |
+          echo "Cloning moz-local repository..."
+          rm -rf "$MOZ_DIR"
+          git clone --depth 1 https://github.com/ai-botxbyte/moz-local.git "$MOZ_DIR"
+          echo "✅ moz-local cloned to $MOZ_DIR"
+          ls -la "$MOZ_DIR"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Optimize APT mirror
+        timeout-minutes: 3
+        run: |
+          sudo systemctl stop unattended-upgrades 2>/dev/null || true
+          sudo killall -9 unattended-upgrades 2>/dev/null || true
+          cat << 'EOF' | sudo tee /etc/apt/apt.conf.d/99ci-network >/dev/null
+          Acquire::Retries "6";
+          Acquire::http::Timeout "15";
+          Acquire::https::Timeout "15";
+          Acquire::ForceIPv4 "true";
+          EOF
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|mirror://mirrors.ubuntu.com/mirrors.txt|g' /etc/apt/sources.list.d/ubuntu.sources
+            sudo sed -i 's|https://azure.archive.ubuntu.com/ubuntu|mirror://mirrors.ubuntu.com/mirrors.txt|g' /etc/apt/sources.list.d/ubuntu.sources
+          fi
+          sudo apt-get -o Acquire::Retries=6 update -q
+          echo "✅ APT optimization complete"
+
+      - name: Install Desktop Environment (XFCE + Chrome + VNC)
+        timeout-minutes: 18
+        run: |
+          sudo systemctl stop unattended-upgrades 2>/dev/null || true
+          sudo killall -9 unattended-upgrades 2>/dev/null || true
+          for i in $(seq 1 12); do
+            if ! sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then break; fi
+            echo "Waiting for dpkg lock... ($i/12)"; sleep 5
+          done
+          mkdir -p ~/cached-debs
+          (wget -q -O ~/cached-debs/google-chrome-stable_current_amd64.deb \
+            https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && echo "✅ Chrome downloaded") &
+          PID_CHROME=$!
+          (wget -q -O ~/cached-debs/turbovnc_2.2.5_amd64.deb \
+            https://phoenixnap.dl.sourceforge.net/project/turbovnc/2.2.5/turbovnc_2.2.5_amd64.deb && echo "✅ TurboVNC downloaded") &
+          PID_VNC=$!
+          (cd ~ && git clone --depth 1 https://github.com/novnc/noVNC.git && \
+            cd noVNC && git clone --depth 1 https://github.com/novnc/websockify.git && echo "✅ noVNC cloned") &
+          PID_NOVNC=$!
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+            xfce4 xfce4-terminal dbus-x11 x11-utils x11-xserver-utils xfonts-base net-tools
+          echo "✅ XFCE installed"
+          wait $PID_CHROME && sudo dpkg -i ~/cached-debs/google-chrome-stable_current_amd64.deb || sudo apt-get install -f -y
+          echo "✅ Chrome installed"
+          wait $PID_VNC && sudo dpkg -i ~/cached-debs/turbovnc_2.2.5_amd64.deb
+          echo "✅ TurboVNC installed"
+          wait $PID_NOVNC
+          echo "✅ noVNC ready"
+
+      - name: Configure VNC Server
+        run: |
+          export PATH=$PATH:/opt/TurboVNC/bin
+          mkdir -p ~/.vnc
+          echo "${VNC_PASSWORD}" | vncpasswd -f > ~/.vnc/passwd
+          chmod 600 ~/.vnc/passwd
+          cat > ~/.vnc/xstartup.turbovnc << 'EOF'
+          #!/bin/bash
+          export NO_AT_BRIDGE=1
+          export SESSION_MANAGER=""
+          dbus-launch /usr/bin/startxfce4 &
+          EOF
+          chmod +x ~/.vnc/xstartup.turbovnc
+          echo "✅ VNC configured (password: botxbyte123)"
+
+      - name: Start VNC Server
+        run: |
+          export PATH=$PATH:/opt/TurboVNC/bin
+          vncserver :1 -geometry 1920x1080 -depth 24 -rfbport $VNC_PORT 2>&1 | tee /tmp/vnc-start.log
+          for i in $(seq 1 15); do
+            if pgrep -f "Xvnc.*:1" > /dev/null; then echo "✅ VNC up in ${i}s"; exit 0; fi
+            sleep 1
+          done
+          echo "❌ Failed to start VNC server"; cat /tmp/vnc-start.log; exit 1
+
+      - name: Start noVNC (Web VNC)
+        run: |
+          cd ~/noVNC
+          ./utils/novnc_proxy --vnc localhost:$VNC_PORT --listen $NOVNC_PORT > /tmp/novnc.log 2>&1 &
+          for i in $(seq 1 10); do
+            if netstat -tuln | grep :$NOVNC_PORT > /dev/null; then echo "✅ noVNC up in ${i}s"; exit 0; fi
+            sleep 1
+          done
+          echo "❌ noVNC failed to start"; cat /tmp/novnc.log; exit 1
+
+      - name: Install cloudflared
+        run: |
+          wget -q -O /tmp/cloudflared.deb \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i /tmp/cloudflared.deb
+          cloudflared --version
+          echo "✅ cloudflared installed"
+
+      - name: Start Cloudflare Quick Tunnel
+        id: tunnel
+        run: |
+          cloudflared tunnel --no-autoupdate --url http://localhost:$NOVNC_PORT > /tmp/tunnel.log 2>&1 &
+          TUNNEL_URL=""
+          for i in $(seq 1 30); do
+            TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/tunnel.log | head -1)
+            if [ -n "$TUNNEL_URL" ]; then break; fi
+            sleep 2
+          done
+          if [ -z "$TUNNEL_URL" ]; then echo "❌ No tunnel URL"; cat /tmp/tunnel.log; exit 1; fi
+          echo "tunnel_url=$TUNNEL_URL" >> $GITHUB_OUTPUT
+          echo "✅ Cloudflare tunnel: $TUNNEL_URL"
+
+      - name: Setup vendored chromium + cf-autoclick extension
+        timeout-minutes: 5
+        run: |
+          # vendor/ is gitignored; tools/setup_vendor.sh downloads ungoogled-chromium
+          # and clones cf-autoclick so moz_checker.py auto-discovers both.
+          cd "$MOZ_DIR"
+          bash tools/setup_vendor.sh
+          test -x vendor/ungoogled-chromium/chrome \
+            || { echo "❌ vendor/ungoogled-chromium/chrome missing"; exit 1; }
+          test -f vendor/cf-autoclick/manifest.json \
+            || { echo "❌ vendor/cf-autoclick/manifest.json missing"; exit 1; }
+          echo "✅ Vendor setup complete"
+
+      - name: Start Moz Pro Checker
+        run: |
+          export DISPLAY=:1
+          export NO_AT_BRIDGE=1
+          cd "$MOZ_DIR"
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install --no-cache-dir -r requirements.txt
+          nohup python3 moz_checker.py --api-url "$MOZ_API_URL" --tabs 1 --no-proxy \
+            > /tmp/moz-checker.log 2>&1 &
+          CHECKER_PID=$!
+          echo "  Checker PID: $CHECKER_PID"
+          sleep 5
+          if kill -0 $CHECKER_PID 2>/dev/null; then
+            echo "✅ Moz Pro checker started (PID: $CHECKER_PID)"
+          else
+            echo "❌ Moz Pro checker failed to start"; cat /tmp/moz-checker.log; exit 1
+          fi
+
+      - name: Display Connection Info
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║              🎉 MOZ PRO CHECKER VNC IS RUNNING! 🎉          ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo "🌐 VNC Access URL: ${{ steps.tunnel.outputs.tunnel_url }}/vnc.html"
+          echo "🔑 Password: botxbyte123"
+          echo "🐍 moz_checker.py --api-url $MOZ_API_URL --tabs 1 --no-proxy"
+          echo ""
+
+      - name: Keep Session Alive
+        run: |
+          export PATH=$PATH:/opt/TurboVNC/bin
+          set +e
+          while true; do
+            echo "🌐 VNC: ${{ steps.tunnel.outputs.tunnel_url }}/vnc.html | Password: botxbyte123"
+            if ! pgrep -f "Xvnc.*:1" > /dev/null; then
+              echo "❌ VNC stopped! Restarting..."
+              vncserver :1 -geometry 1920x1080 -depth 24 -rfbport $VNC_PORT
+              sleep 3
+            fi
+            if ! pgrep -x "cloudflared" > /dev/null; then
+              echo "❌ Tunnel stopped! Restarting..."
+              cloudflared tunnel --no-autoupdate --url http://localhost:$NOVNC_PORT > /tmp/tunnel.log 2>&1 &
+              sleep 5
+            fi
+            if ! pgrep -f "moz_checker.py" > /dev/null; then
+              echo "⚠️ Moz Pro checker stopped! Restarting..."
+              export DISPLAY=:1
+              export NO_AT_BRIDGE=1
+              cd "$MOZ_DIR"
+              source .venv/bin/activate
+              nohup python3 moz_checker.py --api-url "$MOZ_API_URL" --tabs 1 --no-proxy \
+                > /tmp/moz-checker.log 2>&1 &
+              sleep 3
+            fi
+            sleep 30
+          done
+
+      - name: Cleanup VNC
+        if: always()
+        timeout-minutes: 1
+        run: |
+          export PATH=$PATH:/opt/TurboVNC/bin
+          pkill -f "moz_checker.py" || true
+          pkill -x cloudflared || true
+          vncserver -kill :1 || true
+          echo "✅ Cleanup complete"

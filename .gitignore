@@ -1,0 +1,29 @@
+# Build / deploy artifacts
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Downloaded / generated
+*.log
+results/
+
+# Local secrets
+.env
+.env.*
+proxies.txt
+credentials.json
+
+# Vendored browser binary + cf-autoclick extension (populated by
+# tools/setup_vendor.sh — never commit, too large / has its own .git)
+vendor/ungoogled-chromium/
+vendor/ungoogled-chromium.tar.xz
+vendor/cf-autoclick/
+
+# Local master profile staging area
+master-profile/
+master-profile.zip
+
+# Persistent Chrome profile (holds the logged-in Moz session — never commit)
+chrome-profile/

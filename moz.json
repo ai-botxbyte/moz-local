@@ -1,0 +1,21 @@
+{
+  "url": "https://moz.com/domain-analysis?site=${domains}",
+  "variables": {
+    "domains": "example.com"
+  },
+  "options": {
+    "new_tab": true,
+    "close_tab": true,
+    "close_tab_on_error": false,
+    "execution": {
+      "stop_on_error": true
+    }
+  },
+  "actions": [
+    {
+      "type": "evaluate",
+      "script": "var currentDomain=('${domains}'.split(',')[0]||'').trim();function txt(el){return el?el.textContent.replace(/\\s+/g,' ').trim():null;}var result={domain_name:currentDomain,domain_authority:null,page_authority:null,linking_domains:null,spam_score:null,ranking_keywords:null,overview:{},tables:{},top_pages:[],top_linking_domains:[]};var cols=document.querySelectorAll('.col-md-3');for(var i=0;i<cols.length;i++){var label=txt(cols[i].querySelector('h5'));var value=txt(cols[i].querySelector('h1'));if(!label||value===null||value==='')continue;result.overview[label]=value;var l=label.toLowerCase();if(l.indexOf('domain authority')!==-1)result.domain_authority=value;else if(l.indexOf('linking')!==-1)result.linking_domains=value;else if(l.indexOf('ranking keywords')!==-1)result.ranking_keywords=value;else if(l.indexOf('spam')!==-1)result.spam_score=value;}var cards=document.querySelectorAll('.card,.results-card');for(var c=0;c<cards.length;c++){var title=txt(cards[c].querySelector('h3'));var table=cards[c].querySelector('table');if(!title||!table)continue;var cnames=[];var ths=table.querySelectorAll('thead td, thead th');for(var t=0;t<ths.length;t++){cnames.push(txt(ths[t]));}var rows=[];var trs=table.querySelectorAll('tbody tr');for(var r=0;r<trs.length;r++){var tds=trs[r].querySelectorAll('td');if(!tds.length)continue;var obj={};var arr=[];for(var d=0;d<tds.length;d++){var v=txt(tds[d]);arr.push(v);if(cnames[d])obj[cnames[d]]=v;}rows.push(Object.keys(obj).length?obj:arr);}result.tables[title]={columns:cnames,rows:rows};}var tp=result.tables['Top Pages by Links'];if(tp){for(var p=0;p<tp.rows.length;p++){var rowp=tp.rows[p];result.top_pages.push({url:(rowp['Page/URL']||rowp[0]),pa:(rowp['PA']||rowp[1])});}}var tld=result.tables['Top Linking Domains'];if(tld){for(var q=0;q<tld.rows.length;q++){var rowq=tld.rows[q];result.top_linking_domains.push({domain:(rowq['Domain']||rowq[0]),da:(rowq['DA']||rowq[1])});}}if(result.top_pages.length){var root=null,maxpa=null;for(var z=0;z<result.top_pages.length;z++){var t2=result.top_pages[z];var num=parseInt((t2.pa||'').replace(/[^0-9]/g,''),10);if(!isNaN(num)){if(maxpa===null||num>maxpa)maxpa=num;}var u=(t2.url||'').replace(/^https?:\\/\\//,'').replace(/^\\/\\//,'');if(root===null&&(u===currentDomain+'/'||u===currentDomain))root=t2.pa;}result.page_authority=root!==null?root:(maxpa!==null?String(maxpa):null);}var core=[result.domain_authority,result.page_authority,result.linking_domains,result.spam_score];if(!core.some(function(v){return v!==null&&v!==undefined&&v!=='';})){result.error='no metrics found (results card missing or rate-limited)';}return JSON.stringify({total_domains:1,results:[result]});",
+      "set_variable": "moz_results"
+    }
+  ]
+}
