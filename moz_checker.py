@@ -61,7 +61,8 @@ _WEBSHARE_AUTH_ID: Optional[int] = None
 MOZ_JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "moz.json")
 PROXIES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "proxies.txt")
 
-# Test mode: default to a local loopback mock server. NEVER articleinnovator.com.
+# Defaults to a local mock server for test mode; production runs pass
+# --api-url (or MOZ_API_URL) pointing at the management-service gateway.
 DEFAULT_API_URL = os.environ.get("MOZ_API_URL", "http://127.0.0.1:8000")
 
 # Optional master profile to copy per worker (parity with ahref-local). When
@@ -1457,8 +1458,8 @@ def main():
         description="Moz Checker (test mode) — headed browser, pulls domains "
                     "from a local mock server, scrapes moz.com/domain-analysis.")
     p.add_argument("--api-url", default=DEFAULT_API_URL,
-                   help="Mock server base URL (default: %(default)s). "
-                        "Must NOT be a production articleinnovator.com host.")
+                   help="Management-service (or mock server) base URL "
+                        "(default: %(default)s).")
     p.add_argument("--tabs", type=int, default=int(os.environ.get("MOZ_TABS", "1")),
                    help="Number of tabs in the single browser (default: %(default)s). "
                         "The cf-autoclick Cloudflare extension only works on ONE "
