@@ -31,7 +31,7 @@ jobs:
         run: |
           echo "Cloning moz-local repository..."
           rm -rf "$MOZ_DIR"
-          git clone --depth 1 https://github.com/ai-botxbyte/moz-local.git "$MOZ_DIR"
+          git clone --depth 1 https://github.com/domain-metrcis/moz-local.git "$MOZ_DIR"
           echo "✅ moz-local cloned to $MOZ_DIR"
           ls -la "$MOZ_DIR"
 
