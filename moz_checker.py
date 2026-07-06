@@ -1357,12 +1357,19 @@ def run_tabs(api_url: str, headless: bool, chrome_bin: Optional[str],
         if not persistent_profile:
             _remove_worker_profile(profile_path)
 
+    idle_exit = float(os.environ.get("MOZ_IDLE_EXIT", "0") or 0)
+
     try:
-        # Log in ONCE — all tabs share this session/cookies. With a persistent
-        # profile this is a no-op after the first run (session already saved).
-        if not login(driver, api_url, login_timeout):
-            tprint("[FATAL] login failed; not scraping unauthenticated.")
-            return stats
+        # Log in — all tabs share this session/cookies. With a persistent
+        # profile this is a no-op after the first run. Retry rather than exit so
+        # the process doesn't churn (open/close Chrome) on a transient login
+        # failure; only give up if no credentials are available at all.
+        while not login(driver, api_url, login_timeout):
+            if not get_credentials(api_url):
+                tprint("[FATAL] no credentials available; cannot authenticate.")
+                return stats
+            tprint("  [login] failed; rebuilding session and retrying in 15s...")
+            time.sleep(15)
 
         # Open tabs robustly (guarded window.open, not rapid new_window).
         handles = _open_tabs(driver, num_tabs)
@@ -1370,22 +1377,24 @@ def run_tabs(api_url: str, headless: bool, chrome_bin: Optional[str],
         lanes = [{"h": h, "domain": None, "rec": None, "enc": "",
                   "t0": 0.0, "deadline": 0.0} for h in handles]
 
-        no_work = False
+        # A pull-based worker RUNS FOREVER: when the queue is empty it idles and
+        # keeps polling (like ahref-local's worker_loop), instead of exiting —
+        # otherwise the process ends whenever no campaign is feeding the queue
+        # and the VNC keep-alive loop just restarts Chrome over and over.
+        idle_since: Optional[float] = None
         while True:
             active = 0
             # 1. Assign new work to AT MOST ONE idle lane per stagger interval,
             #    so tab navigations don't all trigger Cloudflare simultaneously.
-            if not no_work and (time.time() - last_launch) >= stagger:
+            if (time.time() - last_launch) >= stagger:
                 idle = next((ln for ln in lanes if ln["domain"] is None), None)
                 if idle is not None:
+                    last_launch = time.time()
                     rec = pull_domain(api_url, mode)
-                    if rec is None:
-                        no_work = True
-                    else:
+                    if rec is not None:
                         domain = rec.get("domain_name", "unknown")
                         idle.update(domain=domain, rec=rec, enc=quote(domain, safe=""),
                                     t0=time.time(), deadline=time.time() + scrape_timeout)
-                        last_launch = time.time()
                         if _safe_switch(driver, idle["h"]):
                             try:
                                 driver.get(mode.build_url(domain))
@@ -1394,7 +1403,6 @@ def run_tabs(api_url: str, headless: bool, chrome_bin: Optional[str],
                                         {"domain_name": domain, "status": "error",
                                          "error": f"navigation error: {e}"})
                         else:
-                            # Tab handle is dead — record error, free the lane.
                             _finish(driver, api_url, mode, idle, stats,
                                     {"domain_name": domain, "status": "error",
                                      "error": "tab window unavailable"})
@@ -1417,9 +1425,17 @@ def run_tabs(api_url: str, headless: bool, chrome_bin: Optional[str],
                     if row is not None:
                         _finish(driver, api_url, mode, lane, stats, row)
 
-            if no_work and active == 0:
-                break
-            time.sleep(0.4)
+            # 3. Idle handling — never exit unless MOZ_IDLE_EXIT seconds of
+            #    continuous empty/idle (used by local batch runs; 0 = forever).
+            if active == 0:
+                if idle_since is None:
+                    idle_since = time.time()
+                if idle_exit > 0 and (time.time() - idle_since) >= idle_exit:
+                    break
+                time.sleep(poll_interval)
+            else:
+                idle_since = None
+                time.sleep(0.4)
 
         return stats
     except KeyboardInterrupt:
